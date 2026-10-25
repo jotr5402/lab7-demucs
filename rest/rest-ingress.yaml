@@ -11,6 +11,14 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-body-size: 16m
 spec:
   rules:
-#
-# Your ingress rules here
-#
+    - host: localhost
+      http:
+        paths:
+          path: /
+          type: Prefix
+          backend:
+            service:
+              name: rest-service
+              port:
+                number: 5000
+
