@@ -112,22 +112,23 @@ def queue():
     mimetype = "application/json"
   )
 
-TRACKS_ALLOWED = {"base.mp3", "vocals.mp3", "drums.mp3", "other.mp3"}
-@app.get("/apiv1/track/<track>")
-def track_add(track = None):
-  if track is None or track not in TRACKS_ALLOWED:
+TRACKS_ALLOWED = {"base", "vocals", "drums", "other"}
+@app.get("/apiv1/track/<songhash>/<track>")
+def track_add(songhash = None, track = None):
+  if songhash is None or track is None or track not in TRACKS_ALLOWED:
     return Response(
-      response = "Invalid track",
+      response = f"Request must be of form /apiv1/remove/<songhash>/{TRACKS_ALLOWED}",
       status = 400,
       mimetype = "text/plain"
     )
 
   file = io.BytesIO()
+  filename = f"{songhash}-{track}.mp3"
 
   try:
     rustfs_client.download_fileobj(
       Bucket  = rustfs_track,
-      Key     = track,
+      Key     = filename,
       Fileobj = file
     )
 
@@ -138,17 +139,19 @@ def track_add(track = None):
       mimetype = "text/plain"
     )
 
+  file.seek(0)
+
   return send_file(
     file,
-    download_name = track,
-    mimetype = "audo/mpeg"
+    download_name = filename,
+    mimetype = "audio/mpeg"
   )
 
-@app.route("/apiv1/remove/<track>", methods = ["GET", "DELETE"])
-def track_remove(track = None):
-  if track is None or track not in TRACKS_ALLOWED:
+@app.route("/apiv1/remove/<songhash>/<track>", methods = ["GET", "DELETE"])
+def track_remove(songhash = None, track = None):
+  if songhash is None or track is None or track not in TRACKS_ALLOWED:
     return Response(
-      response = "Invalid track",
+      response = f"Request must be of form /apiv1/remove/<songhash>/{TRACKS_ALLOWED}",
       status = 400,
       mimetype = "text/plain"
     )
@@ -156,7 +159,7 @@ def track_remove(track = None):
   try:
     rustfs_client.delete_object(
       Bucket  = rustfs_track,
-      Key     = track,
+      Key     = f"{songhash}-{track}.mp3",
     )
 
   except (BotoCoreError, ClientError) as e:
