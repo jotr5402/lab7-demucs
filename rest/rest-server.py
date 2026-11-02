@@ -2,7 +2,6 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
@@ -10,11 +9,10 @@ from flask import Flask, request, Response, send_file
 import jsonpickle
 import redis
 
-
 REDIS_WORKER_QUEUE = "toWorker"
 redis_client = redis.StrictRedis(
   host = os.getenv("REDIS_HOST", "localhost"),
-  port = int(os.getenv("REDIS_PORT", 6379)),
+  port = int(os.getenv("REDIS_SERVICE_PORT", 6379)),
 )
 
 
@@ -27,7 +25,7 @@ rustfs_client = boto3.client(
 )
 
 rustfs_queue = os.getenv("RUSTFS_QUEUE", "queue")
-rustfs_track = os.getenv("RUSTFS_QUEUE", "track")
+rustfs_track = os.getenv("RUSTFS_TRACK", "track")
 
 existing = {item["Name"] for item in rustfs_client.list_buckets().get("Buckets", [])}
 for bucket in [rustfs_queue, rustfs_track]:
@@ -38,9 +36,10 @@ for bucket in [rustfs_queue, rustfs_track]:
 
 app = Flask(__name__)
 
-@app.route("/")
+@app.post("/")
 def webhook_callback():
-  redis_client.lpush("logging", request.json)
+  print(request.json)
+  redis_client.lpush("logging", json.dumps(request.json))
 
   return Response(status = 200)
 
@@ -48,42 +47,40 @@ def webhook_callback():
 def separate():
   body = request.json
 
-  match body:
-    case {
-      "mp3": str(),
-      "callback": {
-        "url": str(),
-        "data": {
-          "mp3": str(key),
-          "data": str()
-        }
-      }
-    }:
-      hash = hashlib.md5(Path(key).name.encode("utf-8")).hexdigest()
+  if "mp3" not in body:
+    return Response(
+      response = f"Body needs to have mp3 field",
+      status = 400,
+      mimetype = "text/plain"
+    )
 
-      try:
-        rustfs_client.put_object(
-          Bucket      = rustfs_queue,
-          Key         = hash,
-          Body        = json.dumps(body),
-          ContentType = "application/json"
-        )
+  try:
+    hash = hashlib.md5(str(body["mp3"]).encode("utf-8")).hexdigest()
 
-      except (BotoCoreError, ClientError) as e:
-        return Response(
-          response = f"Rustfs client failure: {e}",
-          status = 500,
-          mimetype = "text/plain"
-        )
+    print(f"Pushing {hash} to rustfs {rustfs_queue} bucket")
+    rustfs_client.put_object(
+      Bucket      = rustfs_queue,
+      Key         = hash,
+      Body        = json.dumps(body),
+      ContentType = "application/json"
+    )
 
-      redis_client.lpush(REDIS_WORKER_QUEUE, hash)
+  except ValueError:
+    return Response(
+      response = f"mp3 needs to be a string",
+      status = 400,
+      mimetype = "text/plain"
+    )
 
-    case _:
-      return Response(
-        response = f"Invalid body",
-        status = 400,
-        mimetype = "text/plain"
-      )
+  except (BotoCoreError, ClientError) as e:
+    return Response(
+      response = f"Rustfs client failure: {e}",
+      status = 500,
+      mimetype = "text/plain"
+    )
+
+  print(f"Pushing {hash} to worker queue")
+  redis_client.lpush(REDIS_WORKER_QUEUE, hash)
 
   return Response(
     response = jsonpickle.encode({
@@ -95,10 +92,22 @@ def separate():
 
 @app.get("/apiv1/queue")
 def queue():
+  try:
+    queue = redis_client.lrange(REDIS_WORKER_QUEUE, 0, -1)
+
+  except (BotoCoreError, ClientError) as e:
+    return Response(
+      response = f"Rustfs client failure: {e}",
+      status = 500,
+      mimetype = "text/plain"
+    )
+
+  response = jsonpickle.encode({
+    "queue": [q if isinstance(q, str) else q.decode("utf-8") for q in queue]
+  })
+
   return Response(
-    response = jsonpickle.encode({
-      "queue": redis_client.lrange(REDIS_WORKER_QUEUE, 0, -1)
-    }),
+    response = response,
     status = 200,
     mimetype = "application/json"
   )
@@ -158,3 +167,6 @@ def track_remove(track = None):
     )
 
   return Response(status = 200)
+
+if __name__ == "__main__":
+  app.run(host = "0.0.0.0", port = 5000)
